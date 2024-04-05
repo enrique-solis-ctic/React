@@ -1,5 +1,5 @@
 
-# DApp PrestamoDeFi
+# dApp PrestamoDeFi
 
 ## Hecho Por
 Enrique Jesús Solís González como proyecto final de React para Blockmaker Academy.
