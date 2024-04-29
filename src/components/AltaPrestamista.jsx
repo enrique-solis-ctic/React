@@ -57,7 +57,7 @@ export default function AltaPrestamista() {
 
       <form className="grid gap-4 p-4">
         <label className="font-bold text-pink-900" htmlFor="lenderAddress">
-          Introduzca dirección Monedero Prestamista
+          Introduzca la dirección del Monedero Prestamista
         </label>
         <TextInput
           id="lenderAddress"
