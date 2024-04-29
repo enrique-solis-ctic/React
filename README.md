@@ -5,7 +5,7 @@
 Enrique Jesús Solís González como proyecto final de React para Blockmaker Academy.
 
 ## Descripción
-PrestamoDeFi es una solución de Finanzas Descentralizadas (DeFi) que facilita la gestión de préstamos con garantías en la blockchain de Ethereum. A través de una aplicación descentralizada (dApp), este proyecto conecta prestatarios con el prestamista principal de manera segura, transparente y eficiente.
+PrestamoDeFi es una solución de Finanzas Descentralizadas (DeFi) que facilita la gestión de préstamos con garantías en la blockchain de Ethereum a través de una aplicación descentralizada (dApp), este proyecto conecta prestatarios con el prestamista principal de manera segura, transparente y eficiente.
 
 La dApp permite a los usuarios:
 - Solicitar préstamos especificando el monto y el plazo deseado.
