@@ -1,0 +1,481 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
+
+//pragma experimental ABIEncoderV2;
+
+//Ejemplos de formatos
+//bytes32: 0x5072756562610000000000000000000000000000000000000000000000000000
+//bytes32: 0x4c61207661726961626c6520737472696e67206e6f2065732062797465733332
+//bytes32: 0x0000000000000000000000000000000000000000000000000000000000000000
+
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+
+//contract dopcontract is OwnableUpgradeable{ //Solo para usar el modificador onlyOwner, no necesario con los roles
+contract dopcontract is AccessControl {
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant MODERATOR_ROLE = keccak256("MODERATOR_ROLE");
+
+    uint32 public op_type_id = 1;
+    uint32 public op_id = 1;
+    uint32 public re_id = 1;
+
+    uint8 public Array_limit = 10; //Array limit set to prevent oversize in father operations
+
+    constructor() {
+        _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(MODERATOR_ROLE, msg.sender);
+    }
+
+    function addModerator(address _user) public onlyRole(ADMIN_ROLE) {
+        _grantRole(MODERATOR_ROLE, _user);
+    }
+
+    function removeModerator(address _user) public onlyRole(ADMIN_ROLE) {
+        _revokeRole(MODERATOR_ROLE, _user);
+    }
+
+    struct operation_type {
+        //Las structs se guardan en slots aleatorios y no hace falta reservar huecos para ampliaciones.
+        //uint op_type_id; Ya guardado en el mapeo
+        string title;
+        bytes32 offchain_data; //Information about the operation type
+        bytes32 offchain_schema; //JSON Schema that serves as a basis for the information of operations of this type
+    }
+    mapping(uint32 => operation_type) private op_type_key; //Mapeo de operation_type.
+
+    struct operation {
+        //uint op_id; Ya guardado en el mapeo como pkey.
+        uint32[] father_op_id;
+        uint32 date; //Fecha de registro de la operación
+        uint32 op_type; //Tipo de operación
+        bytes32 externalID; //*** Indentificador externo. Es una clave secundaria que se puede mapear.
+        bytes32 offchain_data; //hash para acceder a la información secundaria.
+        uint32[] resources;
+        address owner; // Dueño de la operación, cuenta que ha registrado dicha operación, para comprobar en caso de borrado o modificación.
+    }
+
+    mapping(uint32 => operation) private operation_pkey; //Mapeo de la clave primaria.
+    //Un mapeo no se puede iterar: https://ethereum.stackexchange.com/questions/24844/how-do-i-loop-through-a-mapping-of-address-to-struct
+    mapping(bytes32 => uint32) private operation_skey;
+
+    struct resource {
+        //uint st_id; Already in the mapping
+        string title; //Title of the resource
+        uint32 class; //Class of the resource for sorting proposes
+        bytes32 offchain_data; //hash of the IPFS info
+        address[] accounts; //Authorised accounts to add operations with this resource
+        address owner; //Account that created this resource, capable of updating it and add operations with it
+    }
+    mapping(uint32 => resource) private resource_key; //Mapeo de stamp_name
+
+    event OperationTypeChanged(uint32); //Defines the event to keep track of the events
+
+    // Functions to set, modify and delete operations types are restricted to the admin of the contract
+    function addOperationType(
+        string memory _title,
+        bytes32 _offchain_data,
+        bytes32 _offchain_schema
+    ) public onlyRole(ADMIN_ROLE) {
+        op_type_key[op_type_id].title = _title;
+        op_type_key[op_type_id].offchain_schema = _offchain_schema;
+        op_type_key[op_type_id].offchain_data = _offchain_data;
+        emit OperationTypeChanged(op_type_id); //Emits the event with the ID
+        op_type_id++;
+    }
+
+    function modOpertationType(
+        uint32 _op_type_id,
+        string memory _title,
+        bytes32 _offchain_data,
+        bytes32 _offchain_schema
+    ) public onlyRole(ADMIN_ROLE) {
+        op_type_key[_op_type_id].title = _title;
+        op_type_key[_op_type_id].offchain_data = _offchain_data;
+        op_type_key[_op_type_id].offchain_schema = _offchain_schema;
+        emit OperationTypeChanged(op_type_id);
+    }
+
+    function delOperationType(uint32 _op_id) public onlyRole(ADMIN_ROLE) {
+        delete op_type_key[_op_id]; //Deletes Operation type.
+        emit OperationTypeChanged(_op_id);
+    }
+
+    function getOperationType(uint32 _op_type_id)
+        public
+        view
+        returns (
+            uint32,
+            string memory,
+            bytes32,
+            bytes32
+        )
+    {
+        //Funcion para pruebas de visualizar contenido
+        return (
+            _op_type_id,
+            op_type_key[_op_type_id].title,
+            op_type_key[_op_type_id].offchain_schema,
+            op_type_key[_op_type_id].offchain_data
+        );
+    }
+
+    function getOperationTypes(uint32 _firstID, uint32 _lastID)
+        public
+        view
+        returns (operation_type[] memory)
+    {
+        operation_type[] memory operation_types = new operation_type[](
+            op_type_id - 1
+        ); // Initialize the array with the size of total resources
+        for (uint32 i = _firstID; i < _lastID; i++) {
+            // Populate the ResourceInfo struct with data from each resource
+            operation_types[i - 1] = operation_type(
+                op_type_key[i].title,
+                op_type_key[i].offchain_schema,
+                op_type_key[i].offchain_data
+            );
+        }
+        return operation_types; // Return the array of resources
+    }
+
+    modifier op_is_mine(uint32 _op_id) {
+        require(
+            operation_pkey[_op_id].owner == msg.sender,
+            "No eres el propietario de la operacion"
+        );
+        _;
+    }
+
+    modifier op_type_is_defined(uint32 _op_type) {
+        //Check the operation type is defined
+        require(
+            keccak256(abi.encodePacked(op_type_key[_op_type].title)) !=
+                keccak256(abi.encodePacked("")),
+            "Operation type not defined"
+        );
+        _;
+    }
+
+    modifier father_op_are_defined(uint32[] memory _father_op_id) {
+        require(
+            _father_op_id.length <= Array_limit,
+            "Father operations exceed the array limit"
+        );
+        //All father IDs are defined
+        for (uint32 _i = 0; _i < _father_op_id.length; _i++) {
+            require(
+                operation_pkey[_father_op_id[_i]].owner != address(0),
+                "Father operation not defined"
+            );
+        }
+        _;
+    }
+
+    modifier extID_is_mine(bytes32 _externalID) {
+        uint32 _pkey = operation_skey[_externalID];
+        require(
+            operation_pkey[_pkey].owner == msg.sender,
+            "Not the owner of this operation"
+        );
+        _;
+    }
+
+    modifier extID_is_used(bytes32 _externalID) {
+        require(operation_skey[_externalID] != 0, "External ID not used");
+        _;
+    }
+    modifier extID_is_empty(bytes32 _externalID) {
+        if (_externalID != 0) {
+            //Mapping returns a 0 if that operation is not found
+            require(
+                operation_skey[_externalID] == 0,
+                "Already used external ID"
+            );
+        }
+        _;
+    }
+    modifier resources_are_authorised(uint32[] memory _resources) {
+        for (uint256 i = 0; i < _resources.length; i++) {
+            resource storage cache_resource = resource_key[_resources[i]]; // Cache for gas optimization
+            if (cache_resource.owner != msg.sender) {
+                bool authorizedForResource = false;
+                uint256 accountsLength = cache_resource.accounts.length; // Cache length for gas optimization
+                for (uint256 j = 0; j < accountsLength; j++) {
+                    if (cache_resource.accounts[j] == msg.sender) {
+                        authorizedForResource = true;
+                        break; // Exit inner loop if authorized for this resource
+                    }
+                }
+                if (!authorizedForResource) {
+                    revert("Not authorized to use all resources"); // Early revert to save gas
+                }
+            }
+            // If owner, loop continues without further checks
+        }
+        _;
+    }
+
+    event OperationChanged(uint32); //Evento de operacion de traza final añadida.
+
+    function addOperation(
+        uint32[] memory _father_op_id,
+        uint32 _date,
+        uint32 _op_type,
+        bytes32 _externalID,
+        bytes32 _offchain_data,
+        uint32[] memory _resources
+    )
+        public
+        onlyRole(MODERATOR_ROLE)
+        extID_is_empty(_externalID)
+        op_type_is_defined(_op_type)
+        father_op_are_defined(_father_op_id)
+        resources_are_authorised(_resources)
+    {
+        //Only generates a new registry and stores the external ID if is not 0x0000000000000000000000000000000000000000000000000000000000000000
+        if (_externalID != 0) {
+            operation_skey[_externalID] = op_id;
+            operation_pkey[op_id].externalID = _externalID;
+        }
+        operation_pkey[op_id].father_op_id = _father_op_id;
+        operation_pkey[op_id].date = _date;
+        operation_pkey[op_id].op_type = _op_type;
+        if (_offchain_data != 0) {
+            operation_pkey[op_id].offchain_data = _offchain_data;
+        }
+        operation_pkey[op_id].resources = _resources;
+        operation_pkey[op_id].owner = msg.sender;
+        emit OperationChanged(op_id); //Emite el evento cuando se añade una op. de traza final.
+        op_id++;
+    }
+
+    function modOperationByID(
+        uint32 _op_id,
+        uint32[] memory _father_op_id,
+        uint32 _date,
+        uint32 _op_type,
+        bytes32 _offchain_data,
+        uint32[] memory _resources
+    )
+        public
+        op_is_mine(_op_id)
+        father_op_are_defined(_father_op_id)
+        resources_are_authorised(_resources)
+    {
+        //This function modifies an existing operation with the ID but doesn't modify the external ID
+        operation_pkey[_op_id].father_op_id = _father_op_id;
+        operation_pkey[_op_id].date = _date;
+        operation_pkey[_op_id].op_type = _op_type;
+        operation_pkey[_op_id].offchain_data = _offchain_data;
+        operation_pkey[_op_id].resources = _resources;
+        emit OperationChanged(_op_id); //Returns the event to track the changes
+    }
+
+    function modOperationByExtID(
+        uint32[] memory _father_op_id,
+        uint32 _date,
+        uint32 _op_type,
+        bytes32 _externalID,
+        bytes32 _offchain_data,
+        uint32[] memory _resources
+    )
+        public
+        extID_is_mine(_externalID)
+        extID_is_used(_externalID)
+        father_op_are_defined(_father_op_id)
+        resources_are_authorised(_resources)
+    {
+        //Si la clave secundaria se va a repetir y su dueño es el que invoca la función, se actualizan los datos con su clave primaria correspondiente, según los parámetros de la función.
+        uint32 _pkey = operation_skey[_externalID];
+
+        operation_pkey[_pkey].father_op_id = _father_op_id;
+        operation_pkey[_pkey].date = _date;
+        operation_pkey[_pkey].op_type = _op_type;
+        operation_pkey[_pkey].offchain_data = _offchain_data;
+        operation_pkey[_pkey].resources = _resources;
+        emit OperationChanged(_pkey); //Returns the event to track the changes
+    }
+
+    function delOperationByExtID(bytes32 _externalID)
+        public
+        extID_is_mine(_externalID)
+    {
+        uint32 _op_id = operation_skey[_externalID]; //Retrieve ID with the external ID
+
+        //Deletes the mapping
+        delete operation_skey[_externalID];
+
+        //Deletes the operation
+        delete operation_pkey[_op_id];
+        emit OperationChanged(_op_id); //Returns the ID of the deleted operation
+    }
+
+    function delOperationByID(uint32 _op_id) public op_is_mine(_op_id) {
+        bytes32 _externalID = operation_pkey[_op_id].externalID; //Retrieve the external ID to erase the mapping record
+        //Erase the external ID mapping if it exists
+        delete operation_skey[_externalID];
+
+        //Se borra el mapping del indice primario.
+        delete operation_pkey[_op_id];
+        emit OperationChanged(_op_id); //Returns the ID of the deleted operation
+    }
+
+    function getOperationByID(uint32 _op_id)
+        public
+        view
+        returns (
+            uint32[] memory,
+            uint32,
+            uint32,
+            bytes32,
+            bytes32,
+            uint32[] memory,
+            address
+        )
+    {
+        uint32 id = _op_id; //Evita limitación de 7 retornos : "Stack to deep".
+        return (
+            operation_pkey[id].father_op_id,
+            operation_pkey[id].date,
+            operation_pkey[id].op_type,
+            operation_pkey[id].externalID,
+            operation_pkey[id].offchain_data,
+            operation_pkey[id].resources,
+            operation_pkey[id].owner
+        );
+    }
+
+    function getOperations(uint32 _firstID, uint32 _lastID)
+        public
+        view
+        returns (operation[] memory)
+    {
+        operation[] memory operations = new operation[](op_id - 1); // Initialize the array with the size of total resources
+        for (uint32 i = _firstID; i < _lastID; i++) {
+            // Populate the ResourceInfo struct with data from each resource
+            operations[i - 1] = operation(
+                operation_pkey[i].father_op_id,
+                operation_pkey[i].date,
+                operation_pkey[i].op_type,
+                operation_pkey[i].externalID,
+                operation_pkey[i].offchain_data,
+                operation_pkey[i].resources,
+                operation_pkey[i].owner
+            );
+        }
+        return operations; // Return the array of resources
+    }
+
+    function getOperationByExtID(bytes32 _externalID)
+        public
+        view
+        returns (
+            uint32,
+            uint32[] memory,
+            uint32,
+            uint32,
+            bytes32,
+            bytes32,
+            uint32[] memory,
+            address
+        )
+    {
+        uint32 _op_id = operation_skey[_externalID];
+        return (
+            _op_id,
+            operation_pkey[_op_id].father_op_id,
+            operation_pkey[_op_id].date,
+            operation_pkey[_op_id].op_type,
+            operation_pkey[_op_id].externalID,
+            operation_pkey[_op_id].offchain_data,
+            operation_pkey[_op_id].resources,
+            operation_pkey[_op_id].owner
+        );
+    }
+
+    modifier resource_is_mine(uint32 _re_id) {
+        //Comprobar la pertenencia del sello.
+        require(
+            resource_key[_re_id].owner == msg.sender,
+            "No eres el propietario del sello."
+        );
+        _;
+    }
+
+    // Evento, Funcion de añadir, de modificar, de eliminar, y recuperar.
+    event ResourceChanged(uint32); //Evento de recurso añadida.
+
+    function addResource(
+        string memory _title,
+        uint32 _class,
+        bytes32 _offchain_data,
+        address[] memory _accounts
+    ) public onlyRole(MODERATOR_ROLE) {
+        resource_key[re_id].title = _title;
+        resource_key[re_id].class = _class;
+        resource_key[re_id].offchain_data = _offchain_data;
+        resource_key[re_id].accounts = _accounts;
+        resource_key[re_id].owner = msg.sender;
+        emit ResourceChanged(re_id);
+        re_id++;
+    }
+
+    function modResource(
+        uint32 _re_id,
+        string memory _title,
+        uint32 _class,
+        bytes32 _offchain_data,
+        address[] memory _accounts
+    ) public resource_is_mine(_re_id) {
+        resource_key[_re_id].title = _title;
+        resource_key[_re_id].class = _class;
+        resource_key[_re_id].offchain_data = _offchain_data;
+        resource_key[_re_id].accounts = _accounts;
+        emit ResourceChanged(_re_id);
+    }
+
+    function deleteResource(uint32 _re_id) public resource_is_mine(_re_id) {
+        delete resource_key[_re_id];
+        emit ResourceChanged(_re_id);
+    }
+
+    function getResource(uint32 _re_id)
+        public
+        view
+        returns (
+            string memory,
+            uint32,
+            bytes32,
+            address[] memory,
+            address
+        )
+    {
+        require(_re_id < re_id, "Resource does not exist");
+        return (
+            resource_key[_re_id].title,
+            resource_key[_re_id].class,
+            resource_key[_re_id].offchain_data,
+            resource_key[_re_id].accounts,
+            resource_key[_re_id].owner
+        );
+    }
+
+    function getResources(uint32 _firstID, uint32 _lastID)
+        public
+        view
+        returns (resource[] memory)
+    {
+        resource[] memory resources = new resource[](re_id - 1); // Initialize the array with the size of total resources
+        for (uint32 i = _firstID; i < _lastID; i++) {
+            // Populate the ResourceInfo struct with data from each resource
+            resources[i - 1] = resource(
+                resource_key[i].title,
+                resource_key[i].class,
+                resource_key[i].offchain_data,
+                resource_key[i].accounts,
+                resource_key[i].owner
+            );
+        }
+        return resources; // Return the array of resources
+    }
+}
