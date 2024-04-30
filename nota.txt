@@ -477,5 +477,6 @@ contract dopcontract is AccessControl {
             );
         }
         return resources; // Return the array of resources
+        
     }
 }
